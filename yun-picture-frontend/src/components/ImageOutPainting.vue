@@ -1,0 +1,174 @@
+<template>
+  <a-modal v-model:visible="visible" title="AI 扩图" :footer="false" @cancel="closeModal">
+    <a-row gutter="16">
+      <a-col span="12">
+        <h4>原始图片</h4>
+        <img
+          :src="picture?.url"
+          :alt="picture?.name"
+          style="width: 100%; height: 300px; object-fit: contain;"
+        />
+      </a-col>
+      <a-col span="12">
+        <h4>扩图结果</h4>
+        <img
+          v-if="resultImageUrl"
+          :src="resultImageUrl"
+          :alt="picture?.name"
+          style="width: 100%; height: 300px; object-fit: contain"
+        />
+      </a-col>
+    </a-row>
+    <div />
+    <a-flex gap="16" justify="center">
+      <a-button type="primary" :loading="!!taskId" ghost @click="createTask">生成图片</a-button>
+      <a-button v-if="resultImageUrl" type="primary" :loading="uploadLoading" @click="handleUpload"
+        >应用结果</a-button
+      >
+    </a-flex>
+  </a-modal>
+</template>
+
+<script setup lang="ts">
+import { onUnmounted, ref } from 'vue'
+import {
+  createPictureOutPaintingTaskUsingPost,
+  getPictureOutPaintingTaskUsingGet,
+  uploadPictureByUrlUsingPost,
+  uploadPictureUsingPost,
+} from '@/api/pictureController'
+import { message } from 'ant-design-vue'
+
+interface Props {
+  picture?: API.PictureVO
+  spaceId?: number
+  onSuccess?: (newPicture: API.PictureVO) => void
+}
+
+const props = defineProps<Props>()
+
+// 是否可见
+const visible = ref(false)
+
+// 打开弹窗
+const openModal = () => {
+  visible.value = true
+}
+
+// 关闭弹窗
+const closeModal = () => {
+  visible.value = false
+}
+
+// 暴露函数给父组件
+defineExpose({
+  openModal,
+})
+
+const resultImageUrl = ref<string>()
+
+let taskId = ref<string>()
+
+// 创建任务
+const createTask = async () => {
+  if (!props.picture?.id) {
+    return
+  }
+  const res = await createPictureOutPaintingTaskUsingPost({
+    pictureId: props.picture.id,
+
+    parameters: {
+      xScale: 2,
+      yScale: 2,
+    },
+  })
+  if (res.data.code === 0 && res.data.data) {
+    message.success('创建任务成功，请耐心等待，不要退出界面')
+    console.log(res.data.data.output.taskId)
+    taskId.value = res.data.data.output.taskId
+
+    startPolling()
+  } else {
+    message.error('创建任务失败，' + res.data.message)
+  }
+}
+
+let pollingTimer: NodeJS.Timeout = null
+
+// 停止轮询
+const clearPolling = () => {
+  if (pollingTimer) {
+    clearInterval(pollingTimer)
+    pollingTimer = null
+    taskId.value = null
+  }
+}
+
+// 开始轮询任务状态
+const startPolling = () => {
+  if (!taskId.value) return
+
+  pollingTimer = setInterval(async () => {
+    try {
+      const res = await getPictureOutPaintingTaskUsingGet({
+        taskId: taskId.value,
+      })
+      if (res.data.code === 0 && res.data.data) {
+        const taskResult = res.data.data.output
+        if (taskResult.taskStatus === 'SUCCEEDED') {
+          message.success('扩图任务成功')
+          resultImageUrl.value = taskResult.outputImageUrl
+          clearPolling()
+        } else if (taskResult.taskStatus === 'FAILED') {
+          message.error('扩图任务失败')
+          clearPolling()
+        }
+      }
+    } catch (error) {
+      console.error('轮询任务状态失败', error)
+      message.error('检测任务状态失败，请稍后重试')
+      clearPolling()
+    }
+  }, 3000)
+}
+
+onUnmounted(() => {
+  clearPolling()
+})
+
+const uploadLoading = ref<boolean>(false)
+
+// 应用结果
+const handleUpload = async () => {
+  uploadLoading.value = true
+  try {
+    const params: API.PictureUploadRequest = {
+      fileUrl: resultImageUrl.value,
+      spaceId: props.spaceId,
+    }
+    if (props.picture) {
+      params.id = props.picture.id
+    }
+    const res = await uploadPictureByUrlUsingPost(params)
+    if (res.data.code === 0 && res.data.data) {
+      message.success('图片上传成功')
+
+      props.onSuccess?.(res.data.data)
+
+      closeModal()
+    } else {
+      message.error('图片上传失败，' + res.data.message)
+    }
+  } catch (error) {
+    message.error('图片上传失败')
+  } finally {
+    uploadLoading.value = false
+  }
+}
+</script>
+
+<style scoped>
+.image-out-painting {
+  text-align: center;
+}
+</style>
